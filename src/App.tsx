@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FilePlus2,
   History,
@@ -18,6 +18,9 @@ import {
   Smartphone,
   X,
   ArrowRight,
+  Database,
+  CheckCircle2,
+  LogOut,
 } from 'lucide-react';
 import { InvoiceDraft, ShopSettings } from './types';
 import {
@@ -39,6 +42,15 @@ import {
   shareInvoiceNative,
 } from './lib/exportInvoice';
 import { InvoiceForm } from './components/InvoiceForm';
+import {
+  supabase,
+  signInWithGoogle,
+  signOut,
+  invoiceSeq,
+  fetchCloudInvoiceNumbers,
+  saveInvoiceToDatabase,
+  type Session,
+} from './lib/cloud';
 import { InvoicePaper } from './components/InvoicePaper';
 import { SettingsModal } from './components/SettingsModal';
 import { HistoryModal } from './components/HistoryModal';
@@ -49,22 +61,34 @@ const HISTORY_KEY = 'rumahbalon-inv-history-v1';
 const COUNTER_KEY = 'rumahbalon-inv-counter-v1';
 const INSTALL_TIP_KEY = 'rumahbalon-inv-hide-install-tip-v1';
 
-// Last invoice number issued by the company before this app; numbering continues after it.
-const LAST_COMPANY_INVOICE = 1454;
-const FIRST_APP_INVOICE = LAST_COMPANY_INVOICE + 1;
+const DB_MAX_KEY = 'rumahbalon-inv-db-max-v1';
+const PENDING_SAVE_KEY = 'rumahbalon-inv-pending-db-save-v1';
 
-function invoiceSeq(invoiceNumber: string | undefined): number {
-  const n = parseInt(String(invoiceNumber || '').replace(/\D/g, ''), 10);
-  return Number.isFinite(n) ? n : 0;
+// Last invoice number issued by the company before this app; numbering continues after it.
+const LAST_COMPANY_INVOICE = 1510;
+
+function readDbMax(): number {
+  try {
+    const n = parseInt(localStorage.getItem(DB_MAX_KEY) || '0', 10);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
 }
 
-/** Number of the invoice currently being written (never below 001455). */
+/** Lowest number a new invoice may get: after the company's last one and the database's highest. */
+function firstFreeNumber(): number {
+  return Math.max(LAST_COMPANY_INVOICE, readDbMax()) + 1;
+}
+
+/** Number of the invoice currently being written. */
 function readCounter(): number {
+  const floor = firstFreeNumber();
   try {
     const n = parseInt(localStorage.getItem(COUNTER_KEY) || '0', 10);
-    return Number.isFinite(n) && n >= FIRST_APP_INVOICE ? n : FIRST_APP_INVOICE;
+    return Number.isFinite(n) && n >= floor ? n : floor;
   } catch {
-    return FIRST_APP_INVOICE;
+    return floor;
   }
 }
 
@@ -100,7 +124,7 @@ function loadInitialDraft(): InvoiceDraft {
       const parsed = JSON.parse(raw) as InvoiceDraft;
       if (parsed && Array.isArray(parsed.items)) {
         // Drafts from before the company numbering was set (e.g. 000001) move to the current number
-        if (invoiceSeq(parsed.invoiceNumber) < FIRST_APP_INVOICE) {
+        if (!parsed.cloudSavedAt && invoiceSeq(parsed.invoiceNumber) < firstFreeNumber()) {
           return { ...parsed, invoiceNumber: formatInvoiceNumber(readCounter()) };
         }
         return parsed;
@@ -137,7 +161,7 @@ export default function App() {
   const [showInstallHint, setShowInstallHint] = useState<boolean>(shouldShowIosInstallHint);
   const [zoomOffset, setZoomOffset] = useState<number>(0);
   const [busyAction, setBusyAction] = useState<
-    null | 'share' | 'png' | 'pdf' | 'copy' | 'wa'
+    null | 'share' | 'png' | 'pdf' | 'copy' | 'wa' | 'db'
   >(null);
   const [toast, setToast] = useState<string | null>(null);
   const [viewportWidth, setViewportWidth] = useState<number>(() =>
@@ -149,6 +173,123 @@ export default function App() {
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  // ---------- Invoice Site database (login + numbering) ----------
+  const [session, setSession] = useState<Session | null>(null);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  const userEmail = session?.user?.email || '';
+
+  // When signed in, learn the highest number in the database so new numbers never collide
+  useEffect(() => {
+    if (!userEmail) return;
+    let cancelled = false;
+    fetchCloudInvoiceNumbers().then((numbers) => {
+      if (cancelled || !numbers) return;
+      const max = Math.max(0, ...numbers.map(invoiceSeq));
+      try {
+        localStorage.setItem(DB_MAX_KEY, String(max));
+      } catch {
+        // ignore
+      }
+      const cur = draftRef.current;
+      if (!cur.cloudSavedAt && numbers.includes(cur.invoiceNumber.trim())) {
+        const next = String(Math.max(max, LAST_COMPANY_INVOICE) + 1).padStart(6, '0');
+        setDraft((prev) => ({ ...prev, invoiceNumber: next }));
+        showToast(`No. sudah ada di database, diganti ke #${next}`);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userEmail]);
+
+  const isSavedToDb = !!draft.cloudSavedAt && draft.cloudSavedAt === draft.updatedAt;
+
+  const runDatabaseSave = async (email: string) => {
+    setBusyAction('db');
+    try {
+      let current = draftRef.current;
+      let res = await saveInvoiceToDatabase(current, settingsRef.current, email);
+      if (!res.ok && res.reason === 'number_taken') {
+        const ok = window.confirm(
+          `No. #${current.invoiceNumber} sudah dipakai invoice lain di database.\n\nSimpan sebagai #${res.nextNumber}?`
+        );
+        if (!ok) return;
+        current = { ...current, invoiceNumber: res.nextNumber, updatedAt: new Date().toISOString() };
+        setDraft(current);
+        res = await saveInvoiceToDatabase(current, settingsRef.current, email);
+      }
+      if (res.ok) {
+        const saved = { ...current, cloudSavedAt: current.updatedAt };
+        // Mark as saved only if nothing was edited while the request was running
+        setDraft((prev) =>
+          prev.id === saved.id && prev.updatedAt === current.updatedAt
+            ? { ...prev, cloudSavedAt: current.updatedAt }
+            : prev
+        );
+        saveToHistory(saved);
+        try {
+          const n = invoiceSeq(saved.invoiceNumber);
+          if (n > readDbMax()) localStorage.setItem(DB_MAX_KEY, String(n));
+        } catch {
+          // ignore
+        }
+        showToast(res.updated ? `#${saved.invoiceNumber} diperbarui di database` : `#${saved.invoiceNumber} tersimpan ke database`);
+      } else if (res.reason === 'not_staff') {
+        showToast('Akun belum terdaftar sebagai karyawan');
+      } else if (res.reason === 'error') {
+        showToast(navigator.onLine ? 'Gagal simpan ke database' : 'Tidak ada internet');
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleSaveDatabase = async () => {
+    if (!userEmail) {
+      try {
+        localStorage.setItem(PENDING_SAVE_KEY, draft.id);
+      } catch {
+        // ignore
+      }
+      try {
+        await signInWithGoogle();
+      } catch {
+        showToast('Gagal membuka login Google');
+      }
+      return;
+    }
+    await runDatabaseSave(userEmail);
+  };
+
+  // Back from Google login: finish the save that was requested before it
+  useEffect(() => {
+    if (!userEmail) return;
+    let pending: string | null = null;
+    try {
+      pending = localStorage.getItem(PENDING_SAVE_KEY);
+      localStorage.removeItem(PENDING_SAVE_KEY);
+    } catch {
+      // ignore
+    }
+    if (pending && pending === draftRef.current.id) runDatabaseSave(userEmail);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userEmail]);
+
+  const handleSignOut = async () => {
+    await signOut();
+    showToast('Keluar dari akun database');
+  };
 
   useEffect(() => {
     try {
@@ -333,6 +474,7 @@ export default function App() {
       status: 'unpaid',
       dpPaid: 0,
       updatedAt: new Date().toISOString(),
+      cloudSavedAt: undefined,
     });
     setMobileTab('form');
     showToast(`Diduplikat menjadi #${nextNumber}`);
@@ -553,6 +695,46 @@ export default function App() {
                   <span>Cetak</span>
                 </button>
               </div>
+
+              {/* Save to the Invoice Site database */}
+              <button
+                type="button"
+                onClick={handleSaveDatabase}
+                disabled={busyAction !== null}
+                className={`w-full py-2.5 px-3 rounded-xl text-xs font-extrabold inline-flex items-center justify-center gap-2 transition active:scale-[0.98] disabled:opacity-60 ${
+                  isSavedToDb
+                    ? 'bg-[#fdf1f6] border border-[#f2d3e2] text-[#4d3085]'
+                    : 'bg-[#f370a8] hover:bg-[#e75d98] text-white shadow-sm'
+                }`}
+              >
+                {busyAction === 'db' ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : isSavedToDb ? (
+                  <CheckCircle2 className="w-4 h-4 text-[#f370a8]" />
+                ) : (
+                  <Database className="w-4 h-4" />
+                )}
+                <span>
+                  {isSavedToDb
+                    ? 'Tersimpan di Database'
+                    : userEmail
+                    ? 'Simpan ke Database'
+                    : 'Login & Simpan ke Database'}
+                </span>
+              </button>
+              {userEmail && (
+                <div className="flex items-center justify-between gap-2 px-1 text-[10.5px] text-[#4d3085]/55">
+                  <span className="truncate">{userEmail}</span>
+                  <button
+                    type="button"
+                    onClick={handleSignOut}
+                    className="inline-flex items-center gap-1 font-bold text-[#4d3085]/60 hover:text-rose-600 shrink-0"
+                  >
+                    <LogOut className="w-3 h-3" />
+                    Keluar
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Paper Stage */}

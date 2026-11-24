@@ -143,15 +143,32 @@ export const InvoiceForm: React.FC<InvoiceFormProps> = ({
           <h2 className="text-[15px] font-extrabold text-[#4d3085]">
             Pelanggan
           </h2>
-          <button
-            type="button"
-            onClick={onRegenerateNumber}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#fdf1f6] hover:bg-[#fde7f1] text-[#4d3085] text-[11px] font-bold tabular-nums transition active:scale-95"
-            title="Ganti ke nomor urut berikutnya"
-          >
-            <RefreshCw className="w-3 h-3 text-[#f370a8]" />
-            <span>#{draft.invoiceNumber}</span>
-          </button>
+          {/* Editable invoice number + jump to the next free number */}
+          <div className="flex items-center gap-1 rounded-xl bg-[#fdf1f6] border border-[#f2d3e2] pl-2.5 pr-1 py-1">
+            <span className="text-[12px] font-bold text-[#4d3085]/50">No.</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={draft.invoiceNumber}
+              onChange={(e) => updateField('invoiceNumber', e.target.value.replace(/[^0-9A-Za-z-]/g, '').slice(0, 12))}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (/^\d{1,5}$/.test(v)) updateField('invoiceNumber', v.padStart(6, '0'));
+              }}
+              aria-label="Nomor invoice"
+              className="w-[78px] bg-transparent text-[13px] font-extrabold text-[#4d3085] tabular-nums focus:outline-none"
+              style={{ fontSize: '14px' }}
+            />
+            <button
+              type="button"
+              onClick={onRegenerateNumber}
+              className="w-7 h-7 rounded-lg flex items-center justify-center bg-white text-[#f370a8] active:scale-90 transition"
+              title="Nomor berikutnya"
+              aria-label="Pakai nomor berikutnya"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

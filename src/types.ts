@@ -39,6 +39,8 @@ export interface InvoiceDraft {
   dpPaid: number;
   status: PaymentStatus;
   updatedAt: string;
+  /** updatedAt of the version last saved to the Invoice Site database */
+  cloudSavedAt?: string;
 }
 
 export interface PresetPackage {
