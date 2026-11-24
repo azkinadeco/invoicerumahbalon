@@ -17,6 +17,7 @@ import {
   ZoomOut,
   Smartphone,
   X,
+  ArrowRight,
 } from 'lucide-react';
 import { InvoiceDraft, ShopSettings } from './types';
 import {
@@ -48,12 +49,22 @@ const HISTORY_KEY = 'rumahbalon-inv-history-v1';
 const COUNTER_KEY = 'rumahbalon-inv-counter-v1';
 const INSTALL_TIP_KEY = 'rumahbalon-inv-hide-install-tip-v1';
 
+// Last invoice number issued by the company before this app; numbering continues after it.
+const LAST_COMPANY_INVOICE = 1454;
+const FIRST_APP_INVOICE = LAST_COMPANY_INVOICE + 1;
+
+function invoiceSeq(invoiceNumber: string | undefined): number {
+  const n = parseInt(String(invoiceNumber || '').replace(/\D/g, ''), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Number of the invoice currently being written (never below 001455). */
 function readCounter(): number {
   try {
-    const n = parseInt(localStorage.getItem(COUNTER_KEY) || '1', 10);
-    return Number.isFinite(n) && n > 0 ? n : 1;
+    const n = parseInt(localStorage.getItem(COUNTER_KEY) || '0', 10);
+    return Number.isFinite(n) && n >= FIRST_APP_INVOICE ? n : FIRST_APP_INVOICE;
   } catch {
-    return 1;
+    return FIRST_APP_INVOICE;
   }
 }
 
@@ -87,7 +98,13 @@ function loadInitialDraft(): InvoiceDraft {
     const raw = localStorage.getItem(DRAFT_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as InvoiceDraft;
-      if (parsed && Array.isArray(parsed.items)) return parsed;
+      if (parsed && Array.isArray(parsed.items)) {
+        // Drafts from before the company numbering was set (e.g. 000001) move to the current number
+        if (invoiceSeq(parsed.invoiceNumber) < FIRST_APP_INVOICE) {
+          return { ...parsed, invoiceNumber: formatInvoiceNumber(readCounter()) };
+        }
+        return parsed;
+      }
     }
   } catch {
     // fallback
@@ -187,7 +204,13 @@ export default function App() {
   };
 
   const bumpInvoiceNumber = (): string => {
-    const nextNum = readCounter() + 1;
+    // Next after the highest number seen anywhere, so numbers never repeat
+    const highest = Math.max(
+      readCounter(),
+      invoiceSeq(draft.invoiceNumber),
+      ...history.map((h) => invoiceSeq(h.invoiceNumber))
+    );
+    const nextNum = highest + 1;
     try {
       localStorage.setItem(COUNTER_KEY, String(nextNum));
     } catch {
@@ -617,16 +640,10 @@ export default function App() {
             <button
               type="button"
               onClick={() => setMobileTab('preview')}
-              className="px-3.5 py-2.5 rounded-2xl bg-[#4d3085] text-white text-right shrink-0 shadow-md active:scale-95 transition"
+              className="px-4 py-3 rounded-2xl bg-[#4d3085] text-white text-xs font-extrabold inline-flex items-center gap-1.5 shrink-0 shadow-md active:scale-95 transition"
             >
-              <div className="text-[9px] font-bold uppercase tracking-wider text-[#f9b4d3] leading-none">
-                {totals.isPaid ? 'Status' : totals.hasDp ? 'Sisa' : 'Total'}
-              </div>
-              <div className="text-xs font-extrabold tabular-nums mt-0.5 leading-none">
-                {totals.isPaid
-                  ? 'LUNAS'
-                  : formatRupiah(totals.hasDp ? totals.remaining : totals.total)}
-              </div>
+              <span>Lanjutkan</span>
+              <ArrowRight className="w-4 h-4 text-[#f9b4d3]" />
             </button>
           ) : (
             <button

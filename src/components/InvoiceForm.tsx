@@ -533,6 +533,34 @@ export const InvoiceForm: React.FC<InvoiceFormProps> = ({
           </div>
         )}
 
+        {/* Breakdown: total tagihan -> DP -> sisa */}
+        {totals.total > 0 && (
+          <div className="rounded-xl border border-[#f2d3e2] bg-white px-4 py-3 space-y-2 text-[13px]">
+            {totals.discount > 0 && (
+              <>
+                <div className="flex items-center justify-between text-[#4d3085]/70">
+                  <span>Subtotal</span>
+                  <span className="font-semibold tabular-nums">{formatRupiah(totals.subtotal)}</span>
+                </div>
+                <div className="flex items-center justify-between text-emerald-700">
+                  <span>Diskon</span>
+                  <span className="font-semibold tabular-nums">- {formatRupiah(totals.discount)}</span>
+                </div>
+              </>
+            )}
+            <div className="flex items-center justify-between text-[#4d3085]">
+              <span className="font-semibold">Total Tagihan</span>
+              <span className="font-bold tabular-nums">{formatRupiah(totals.total)}</span>
+            </div>
+            {totals.effectivePaid > 0 && (
+              <div className="flex items-center justify-between text-[#f370a8]">
+                <span className="font-semibold">{totals.isPaid ? 'Dibayar' : 'DP'}</span>
+                <span className="font-bold tabular-nums">- {formatRupiah(totals.effectivePaid)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Clean Total Summary Bar */}
         <div className="rounded-xl bg-[#4d3085] text-white px-4 py-3 flex items-center justify-between gap-2">
           <div>
